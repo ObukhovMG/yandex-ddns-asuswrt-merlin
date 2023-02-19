@@ -1,0 +1,84 @@
+#!/bin/sh
+# Bash script for updating Yandex DNS records with Merlin's asuswrt firmware. Place this file under /jffs/scripts and run 'chmod u+x ddns-start'
+
+# Yandex DNS API 360
+# Api ref https://yandex.ru/dev/api360/doc/ref/index.html
+
+# Create app https://oauth.yandex.ru/
+# Code request https://yandex.ru/dev/id/doc/dg/oauth/reference/auto-code-client.html#auto-code-client__get-code
+# Exchange code to access token https://yandex.ru/dev/id/doc/dg/oauth/reference/auto-code-client.html#auto-code-client__get-token
+
+# SETTINGS
+access_token=SET_YOUR_ACCESS_TOKEN_HERE
+organization=SET_YOUR_ORGANIZATION_ID_HERE
+domain=SET_YOUR_DOMAIN_NAME_HERE
+ttl=26000
+
+result=true
+ip=${1} # Passed by the router
+
+# Detect ip if not passed
+if [ -z "$ip" ]
+ then
+	ip="$(curl -fs4 https://myip.dnsomatic.com/)"
+ fi
+
+# Get records list
+queryRecords=$(curl -4 -s -H "Authorization: OAuth $access_token" \
+	"https://api360.yandex.net/directory/v1/org/$organization/domains/$domain/dns")
+
+queryRecords=$(echo $queryRecords | jq -c '.records')
+echo $queryRecords
+printf "\n"
+
+#curl and get array of records
+echo "$queryRecords" | jq -c '.[]' | while read record; do
+	printf "Read $record\n"
+
+	# Get type and skip not A
+	recordId=$(echo "$record" | jq -c -r '.recordId')
+	type=$(echo "$record" | jq -c -r '.type')
+
+	rName=$(echo "$record" | jq -c -r '.name')
+	rTTL=$(echo "$record" | jq -c -r '.ttl')
+
+	state=false
+	if [[ "$type" == "A" ]]; then
+		state=true
+	fi
+
+	if [[ "$state" ==  false ]]; then
+		printf "skip\n"
+		continue
+	fi
+
+	json=$( jq -c -n \
+                  --arg ad "$ip" \
+                  --arg nm "$rName" \
+                  --arg tl "$rTTL" \
+                  '{address: $ad, name: $nm, ttl: $tl}' )
+	http_code=$(curl -4 -s -w "%{http_code}" \
+		-H "Authorization: OAuth $access_token" \
+		-d "${json}" \
+		-H "Content-Type: application/json" \
+		-X POST "https://api360.yandex.net/directory/v1/org/$organization/domains/$domain/dns/$recordId")
+
+	printf "Api response $http_code\n"
+
+	if [[ "$http_code" != 200 ]]; then
+		result=false
+	fi
+done
+
+if [[ "$result" == false ]]; then
+	printf "error\n"
+	logger -t "[DDNS]" "Error updating $domain"
+    /sbin/ddns_custom_updated 0
+else   
+	printf "ok\n"
+	logger -t "[DDNS]" "$domain updated successfully."
+    /sbin/ddns_custom_updated 1
+fi
+
+
+
