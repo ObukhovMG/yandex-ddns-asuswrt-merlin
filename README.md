@@ -1,5 +1,6 @@
 # Yandex-DDNS-AsusWrt-Merlin
-Custom script for Asuswrt-Merlin router firmware to update DDNS, uses new [Api360](https://yandex.ru/dev/api360/).
+Custom script for Asuswrt-Merlin router firmware to update DDNS, uses new [Api360](https://yandex.ru/dev/api360/).\
+Automatically updates external router IP in A records of a domain. 
 
 ## Setup your domain on yandex
 https://yandex.ru/support/business/domains/delegate-domain.html
