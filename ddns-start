@@ -17,68 +17,124 @@ ttl=26000
 result=true
 ip=${1} # Passed by the router
 
-# Detect ip if not passed
-if [ -z "$ip" ]
- then
-	ip="$(curl -fs4 https://myip.dnsomatic.com/)"
- fi
+validate_ip() {
+    echo "$1" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$'
+}
 
-# Get records list
-queryRecords=$(curl -4 -s -H "Authorization: OAuth $access_token" \
-	"https://api360.yandex.net/directory/v1/org/$organization/domains/$domain/dns")
+# Detect IP if not passed
+if [ -z "$ip" ]; then
+    echo "No IP passed, trying to fetch from 2ip.ru"
+    logger -t "[DDNS]" "No IP passed, trying to fetch from 2ip.ru"
+    ip=$(curl -fs4 https://2ip.ru/)
+    if [ $? -ne 0 ]; then
+        echo "Error getting IP via 2ip.ru"
+        logger -t "[DDNS]" "Error getting IP via 2ip.ru"
+        /sbin/ddns_custom_updated 0
+        exit 1
+    fi
 
-queryRecords=$(echo $queryRecords | jq -c '.records')
-echo $queryRecords
-printf "\n"
+    if ! validate_ip "$ip"; then
+        echo "Invalid IP address: $ip"
+        logger -t "[DDNS]" "Invalid IP address: $ip"
+        /sbin/ddns_custom_updated 0
+        exit 1
+    fi
 
-#curl and get array of records
-echo "$queryRecords" | jq -c '.[]' | while read record; do
-	printf "Read $record\n"
-
-	# Get type and skip not A
-	recordId=$(echo "$record" | jq -c -r '.recordId')
-	type=$(echo "$record" | jq -c -r '.type')
-
-	rName=$(echo "$record" | jq -c -r '.name')
-	rTTL=$(echo "$record" | jq -c -r '.ttl')
-
-	state=false
-	if [[ "$type" == "A" ]]; then
-		state=true
-	fi
-
-	if [[ "$state" ==  false ]]; then
-		printf "skip\n"
-		continue
-	fi
-
-	json=$( jq -c -n \
-                  --arg ad "$ip" \
-                  --arg nm "$rName" \
-                  --arg tl "$rTTL" \
-                  '{address: $ad, name: $nm, ttl: $tl}' )
-	http_code=$(curl -4 -s -w "%{http_code}" \
-		-H "Authorization: OAuth $access_token" \
-		-d "${json}" \
-		-H "Content-Type: application/json" \
-		-X POST "https://api360.yandex.net/directory/v1/org/$organization/domains/$domain/dns/$recordId")
-
-	printf "Api response $http_code\n"
-
-	if [[ "$http_code" != 200 ]]; then
-		result=false
-	fi
-done
-
-if [[ "$result" == false ]]; then
-	printf "error\n"
-	logger -t "[DDNS]" "Error updating $domain"
-    /sbin/ddns_custom_updated 0
-else   
-	printf "ok\n"
-	logger -t "[DDNS]" "$domain updated successfully."
-    /sbin/ddns_custom_updated 1
+    echo "Got IP from 2ip.ru: $ip"
+    logger -t "[DDNS]" "Got IP from 2ip.ru: $ip"
+else
+    echo "IP passed: $ip"
+    logger -t "[DDNS]" "IP passed: $ip"
 fi
 
+# Fetch DNS records
+queryRecords=$(curl -4 -s -H "Authorization: OAuth $access_token" \
+    "https://api360.yandex.net/directory/v1/org/$organization/domains/$domain/dns")
 
+# Log the full response from Yandex API
+echo "API Response: $queryRecords"
+logger -t "[DDNS]" "API Response: $queryRecords"
 
+# Check for authorization error (Unauthorized)
+if echo "$queryRecords" | grep -q '"code":16'; then
+    echo "Authorization error: Unauthorized (code 16)"
+    logger -t "[DDNS]" "Authorization error: Unauthorized (code 16)"
+    /sbin/ddns_custom_updated 0
+    exit 1
+fi
+
+if [ $? -ne 0 ] || [ -z "$queryRecords" ]; then
+    echo "Error fetching DNS records from Yandex API. Response was empty or invalid."
+    logger -t "[DDNS]" "Error fetching DNS records from Yandex API. Response was empty or invalid."
+    /sbin/ddns_custom_updated 0
+    exit 1
+fi
+
+queryRecords=$(echo "$queryRecords" | jq -c '.records' 2>/dev/null)
+if [ $? -ne 0 ] || [ -z "$queryRecords" ]; then
+    echo "Error parsing JSON from Yandex API."
+    logger -t "[DDNS]" "Error parsing JSON from Yandex API."
+    /sbin/ddns_custom_updated 0
+    exit 1
+fi
+
+# Log the fetched DNS records
+echo "Fetched DNS records: $queryRecords"
+logger -t "[DDNS]" "Fetched DNS records: $queryRecords"
+
+# Update DNS records
+echo "$queryRecords" | jq -c '.[]' | while read record; do
+    recordId=$(echo "$record" | jq -r '.recordId')
+    type=$(echo "$record" | jq -r '.type')
+    rName=$(echo "$record" | jq -r '.name')
+    rTTL=$(echo "$record" | jq -r '.ttl')
+    rTTL=${rTTL:-26000}
+
+    if [ "$type" != "A" ]; then
+        continue
+    fi
+
+    # Prepare the JSON request body
+    json=$(jq -c -n --arg ad "$ip" --arg nm "$rName" --arg tl "$rTTL" \
+        '{address: $ad, name: $nm, ttl: $tl}')
+
+    # Log the sent request
+    echo "Sending request for record $rName with IP $ip: $json"
+    logger -t "[DDNS]" "Sending request for record $rName with IP $ip: $json"
+
+    # Send the update request to Yandex API and capture HTTP code and response body
+    api_response=$(curl -4 -s -w "%{http_code}" -o /tmp/ddns_api_response.txt \
+        -H "Authorization: OAuth $access_token" \
+        -H "Content-Type: application/json" \
+        -d "$json" \
+        -X POST "https://api360.yandex.net/directory/v1/org/$organization/domains/$domain/dns/$recordId")
+
+    # Log the HTTP response code and the full response body
+    http_code=$(echo "$api_response" | tail -n1)
+    response_body=$(cat /tmp/ddns_api_response.txt)
+
+    echo "API Response for record $rName: HTTP code $http_code"
+    logger -t "[DDNS]" "API Response for record $rName: HTTP code $http_code"
+
+    echo "API Response Body for record $rName: $response_body"
+    logger -t "[DDNS]" "API Response Body for record $rName: $response_body"
+
+    if [ "$http_code" -ne 200 ]; then
+        echo "Failed to update record $rName. HTTP code: $http_code"
+        logger -t "[DDNS]" "Failed to update record $rName. HTTP code: $http_code"
+        result=false
+    else
+        echo "Record $rName updated successfully."
+        logger -t "[DDNS]" "Record $rName updated successfully."
+    fi
+done
+
+if [ "$result" = false ]; then
+    echo "Error updating DNS records."
+    logger -t "[DDNS]" "Error updating DNS records."
+    /sbin/ddns_custom_updated 0
+else
+    echo "DNS records updated successfully."
+    logger -t "[DDNS]" "DNS records updated successfully."
+    /sbin/ddns_custom_updated 1
+fi
