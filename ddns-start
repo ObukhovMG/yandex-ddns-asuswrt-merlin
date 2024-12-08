@@ -13,6 +13,8 @@ access_token=SET_YOUR_ACCESS_TOKEN_HERE
 organization=SET_YOUR_ORGANIZATION_ID_HERE
 domain=SET_YOUR_DOMAIN_NAME_HERE
 ttl=26000
+# Use ; symbol to delimite excluded hosts
+exclude_host_list=
 
 result=true
 ip=${1} # Passed by the router
@@ -91,6 +93,13 @@ echo "$queryRecords" | jq -c '.[]' | while read record; do
     rTTL=${rTTL:-26000}
 
     if [ "$type" != "A" ]; then
+        continue
+    fi
+
+    # Check if the record is in the exclude list
+    if echo "$exclude_host_list" | tr ';' '\n' | grep -qx "$rName"; then
+        echo "Skipping record $rName (excluded)"
+        logger -t "[DDNS]" "Skipping record $rName (excluded)"
         continue
     fi
 
