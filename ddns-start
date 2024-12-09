@@ -32,14 +32,14 @@ if [ -z "$ip" ]; then
         echo "Error getting IP via 2ip.ru"
         logger -t "[DDNS]" "Error getting IP via 2ip.ru"
         /sbin/ddns_custom_updated 0
-        exit 1
+        exit 0
     fi
 
     if ! validate_ip "$ip"; then
         echo "Invalid IP address: $ip"
         logger -t "[DDNS]" "Invalid IP address: $ip"
         /sbin/ddns_custom_updated 0
-        exit 1
+        exit 0
     fi
 
     echo "Got IP from 2ip.ru: $ip"
@@ -62,14 +62,14 @@ if echo "$queryRecords" | grep -q '"code":16'; then
     echo "Authorization error: Unauthorized (code 16)"
     logger -t "[DDNS]" "Authorization error: Unauthorized (code 16)"
     /sbin/ddns_custom_updated 0
-    exit 1
+    exit 0
 fi
 
 if [ $? -ne 0 ] || [ -z "$queryRecords" ]; then
     echo "Error fetching DNS records from Yandex API. Response was empty or invalid."
     logger -t "[DDNS]" "Error fetching DNS records from Yandex API. Response was empty or invalid."
     /sbin/ddns_custom_updated 0
-    exit 1
+    exit 0
 fi
 
 queryRecords=$(echo "$queryRecords" | jq -c '.records' 2>/dev/null)
@@ -77,7 +77,7 @@ if [ $? -ne 0 ] || [ -z "$queryRecords" ]; then
     echo "Error parsing JSON from Yandex API."
     logger -t "[DDNS]" "Error parsing JSON from Yandex API."
     /sbin/ddns_custom_updated 0
-    exit 1
+    exit 0
 fi
 
 # Log the fetched DNS records
